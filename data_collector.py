@@ -1,7 +1,54 @@
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import requests
 import yfinance as yf
+from datetime import datetime, timezone
+
+
+def _download_yahoo_chart(symbol, start_date, end_date):
+    """Download Yahoo Finance chart data directly when yfinance fails."""
+    start_ts = int(datetime.strptime(start_date, "%Y-%m-%d").replace(tzinfo=timezone.utc).timestamp())
+    end_ts = int(datetime.strptime(end_date, "%Y-%m-%d").replace(tzinfo=timezone.utc).timestamp())
+    url = f"https://query2.finance.yahoo.com/v8/finance/chart/{symbol}"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        "Accept": "application/json, text/javascript, */*; q=0.01",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Connection": "keep-alive",
+    }
+    params = {
+        "period1": start_ts,
+        "period2": end_ts,
+        "interval": "1d",
+        "includeAdjustedClose": "true",
+    }
+    response = requests.get(url, headers=headers, params=params, timeout=30)
+    response.raise_for_status()
+    payload = response.json()
+    result = payload.get("chart", {}).get("result")
+    if not result:
+        raise RuntimeError(f"Yahoo chart API returned no results for '{symbol}'.")
+    result = result[0]
+    timestamps = result.get("timestamp") or []
+    indicators = result.get("indicators", {})
+    quote = indicators.get("quote", [{}])[0]
+    adjclose = indicators.get("adjclose", [{}])[0].get("adjclose")
+    if not timestamps:
+        raise RuntimeError(f"Yahoo chart API returned no price timestamps for '{symbol}'.")
+    df = pd.DataFrame(
+        {
+            "Open": quote.get("open", []),
+            "High": quote.get("high", []),
+            "Low": quote.get("low", []),
+            "Close": quote.get("close", []),
+            "Adj Close": adjclose if adjclose is not None else quote.get("close", []),
+            "Volume": quote.get("volume", []),
+        },
+        index=pd.to_datetime(timestamps, unit="s", utc=True),
+    )
+    df.index.name = "Date"
+    return df
 
 
 def download_stock_data(symbol, start_date, end_date):
@@ -14,8 +61,39 @@ def download_stock_data(symbol, start_date, end_date):
 
     Returns:
         pandas.DataFrame: Historical OHLCV stock data.
+
+    Raises:
+        RuntimeError: If the symbol data cannot be downloaded.
     """
-    data = yf.download(symbol, start=start_date, end=end_date)
+    try:
+        data = yf.download(symbol, start=start_date, end=end_date, progress=False, threads=False)
+    except Exception as exc:
+        print(f"Failed to download '{symbol}' using yf.download: {exc}")
+        data = pd.DataFrame()
+
+    if data.empty:
+        try:
+            ticker = yf.Ticker(symbol)
+            data = ticker.history(start=start_date, end=end_date, interval='1d', actions=False)
+        except Exception as exc:
+            print(f"Failed to download '{symbol}' using yf.Ticker.history: {exc}")
+            data = pd.DataFrame()
+
+    if data.empty:
+        try:
+            print(f"Attempting direct Yahoo chart download for '{symbol}'...")
+            data = _download_yahoo_chart(symbol, start_date, end_date)
+        except Exception as exc:
+            raise RuntimeError(
+                f"Failed to download '{symbol}' from Yahoo Finance: {exc}"
+            ) from exc
+
+    if data.empty:
+        raise RuntimeError(
+            f"No historical data downloaded for '{symbol}'. "
+            "Check the ticker symbol, date range, and network connectivity."
+        )
+
     return data
 
 

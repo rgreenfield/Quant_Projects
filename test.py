@@ -13,14 +13,12 @@ print('Downloading', symbol, 'from', start, 'to', end)
 df = download_stock_data(symbol, start_date=start.isoformat(), end_date=end.isoformat())
 print('Downloaded rows:', len(df))
 
-
 df = clean_data(df)
 df = add_returns(df)
 save_data(df, filepath)
 loaded = load_data(filepath)
 fig = plot_price_and_returns(loaded, symbol)
 fig.savefig(plot_path)
-
 
 """
 print('Saved CSV to', filepath)
